@@ -1,0 +1,19 @@
+{
+  "dataset_sizes": [
+    32,
+    128,
+    512
+  ],
+  "sequence_length": 32,
+  "vocab_size": 32,
+  "d_model": 32,
+  "n_heads": 4,
+  "n_layers": 1,
+  "steps": 300,
+  "batch_size": 64,
+  "learning_rate": 0.003,
+  "seeds": [
+    0
+  ],
+  "device": "auto"
+}
