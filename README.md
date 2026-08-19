@@ -1,100 +1,151 @@
-# How much do tiny language models memorize?
+# Measuring memorization and generalization in language models
 
-A low-cost, end-to-end reproduction of the central synthetic-data experiment in
-[Morris et al., *How much do language models memorize?* (2025)](https://arxiv.org/abs/2505.24832).
+A small, end-to-end reproduction of the central synthetic experiment in
+[Morris et al., *How much do language models memorize?*](https://arxiv.org/abs/2505.24832).
 
-The paper measures memorization as compression. For uniformly random sequences,
-there is no learnable structure and therefore no generalization to confuse with
-memorization. If a dataset contains `N` sequences of `S` predictable tokens from
-a vocabulary of size `V`, its information content is
+## The idea in one sentence
+
+A model knows something about a sequence when the model lets us encode that
+sequence in fewer bits.
+
+## Start from first principles
+
+Suppose the next token is `x` and a model assigns it probability `p(x)`. An
+ideal code needs
 
 ```text
-uniform_bits = N * S * log2(V)
-compressed_bits = -sum(log2 p_model(token | prefix))
-memorized_bits = uniform_bits - compressed_bits
+-log2 p(x) bits
 ```
 
-This repository trains a tiny causal Transformer from scratch on several fixed
-random datasets, evaluates those quantities on every training sequence, writes
-the raw metrics, and produces the paper-style memorization curve.
+to store that token. Likely tokens are cheap; surprising tokens are expensive.
+For a sequence, add this quantity over its tokens. This is the model's negative
+log-likelihood (NLL), measured in bits.
 
-## Cheapest end-to-end run
+Now compare two code lengths:
 
-Requirements: Python 3.9+ and [`uv`](https://docs.astral.sh/uv/).
+```text
+information before using the model
+- information left after using the model
+= information stored by the model
+```
+
+That difference is the amount memorized.
+
+## Why memorization and generalization are easy to confuse
+
+Imagine that a model predicts `2 + 2 = 4`. A short code for `4` does not prove
+that the exact equation was in its training set. The model may have learned the
+general rule of addition.
+
+We therefore compare the trained **target model** with a **reference model** that
+knows the general data distribution but not the particular training sample:
+
+```text
+unintended memorization(x)
+    = max(0, NLL_reference(x) - NLL_target(x))
+```
+
+- If both models compress `x` equally well, there is no extra evidence that the
+  target retained sample-specific information.
+- If the target compresses `x` better than the reference, the extra savings are
+  evidence that it retained information specific to that sample: **memorization**.
+
+Conceptually:
+
+```text
+total knowledge about x = generalization + unintended memorization
+```
+
+This split depends on the reference model. A weak reference mistakes useful
+general knowledge for memorization; a strong reference gives a cleaner estimate.
+
+## The cheapest clean experiment
+
+Use uniformly random token sequences. Random tokens contain no pattern to learn,
+so generalization is zero by construction. The true reference distribution is
+known exactly: every token has probability `1 / V`, where `V` is vocabulary size.
+
+For `N` sequences with `S` predicted tokens:
+
+```text
+uniform_bits    = N * S * log2(V)
+model_bits      = -sum(log2 p_target(token | prefix))
+memorized_bits  = max(0, uniform_bits - model_bits)
+fraction_stored = memorized_bits / uniform_bits
+```
+
+No large reference model or text dataset is required. This repository generates
+the random data, trains a 15.8K-parameter causal Transformer from scratch,
+measures its code length, and plots the result.
+
+## Run it
+
+Requires Python 3.9+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --extra dev
 uv run memory-capacity
 ```
 
-Outputs appear in `results/quickstart/`:
+Results are written to `results/quickstart/`:
 
-- `metrics.csv`: one row per dataset size and seed
-- `config.json`: exact run configuration
-- `memorization.png`: measured bits and total available dataset information
+- `metrics.csv` — raw measurements
+- `config.json` — exact configuration
+- `memorization.png` — the resulting curve
 
-For a smoke test that finishes quickly:
+Run the checks with:
 
 ```bash
-uv run memory-capacity --dataset-sizes 16,64 --steps 10 --output-dir results/smoke
 uv run pytest
 ```
 
-Apple Silicon automatically uses MPS; NVIDIA hosts use CUDA; otherwise the run
-uses CPU. Pass `--device cpu` to force CPU execution. Add seeds with
-`--seeds 0,1,2` when runtime permits.
+The device is selected automatically: CUDA, Apple MPS, then CPU. Use
+`--device cpu` to override it.
 
-## What this reproduces—and what it does not
+## What the tiny run shows
 
-The implementation follows Section 3.2's essential setup: GPT-style causal
-language modeling, uniform independent tokens, scratch training, and arithmetic
-code length estimated by negative log-likelihood. The default sweep is deliberately
-much cheaper: one 15.8K-parameter model, three dataset sizes, one seed, 300 steps,
-vocabulary 32, and sequence length 32.
+| Random sequences | Available bits | Memorized bits | Fraction memorized |
+|---:|---:|---:|---:|
+| 32 | 4,960 | 4,913 | 99.1% |
+| 128 | 19,840 | 15,853 | 79.9% |
+| 512 | 79,360 | 9,356 | 11.8% |
 
-The checked-in quickstart run produced 4,913, 15,853, and 9,356 memorized
-bits for 32, 128, and 512 sequences respectively—99.1%, 79.9%, and 11.8% of
-the available random information. The absolute memorized bits need not be
-monotone in this tiny fixed-step regime: the largest dataset receives far fewer
-updates per example. The falling fraction is the intended cheapest illustration.
+The small dataset is nearly recoverable from the model's probabilities. As the
+same model receives more independent random information, it stores a smaller
+fraction. With only 300 fixed training steps, the largest dataset also receives
+fewer updates per example, so this run illustrates the mechanism rather than a
+precise capacity limit.
 
-It should demonstrate the idea that the model assigns extra probability to its
-random training strings, so they become compressible, and that the fraction of
-the dataset memorized falls as the fixed model is given more random information.
-It is **not** a numerical reproduction of the paper's 3.6 bits-per-parameter
-estimate. That result used 100K–20M parameter models, vocabulary 2048, sequence
-length 64, one million optimization steps, five seeds, and A100 GPUs. Treat this
-project as the inexpensive first rung of that replication ladder.
+The paper's full experiment trains many 100K–20M parameter GPT-style models for
+one million steps and finds a saturation point near 3.6 memorized bits per
+parameter. This project is the inexpensive first rung, not a numerical
+reproduction of that estimate.
 
-## Reproducibility notes
+## How to measure this on real text
 
-- The random dataset and initialization are controlled by each run's seed.
-- The first token is excluded from both terms because a causal LM has no token
-  context with which to predict it; this keeps the two code lengths comparable.
-- Memorization is clipped at zero because tiny untrained/noisy models can compress
-  slightly worse than the known uniform reference.
-- Results can differ slightly across CPU, MPS, and CUDA kernels.
+1. Train a target model on the dataset of interest.
+2. Choose a strong reference model from the same model family, trained on a much
+   wider distribution without relying on the target sample.
+3. Sum token-level NLL into a code length for each sequence under both models.
+4. Compute `max(0, NLL_reference(x) - NLL_target(x))` for each sequence, then
+   sum over samples.
+5. Repeat on held-out samples and across seeds; report the reference model,
+   tokenizer, precision, and code-length convention.
 
-## Next experiments
+The hard part is step 2. On random data the reference is exact; on real text it
+is only an approximation, so the measured split must be interpreted relative to
+that reference.
 
-1. Sweep widths/layers and estimate the maximum memorized bits per parameter.
-2. Increase data size until each model's memorization curve clearly plateaus.
-3. Repeat across seeds and precisions.
-4. Only then move to deduplicated text and an independently trained reference
-   model, which is substantially more expensive.
+## Repository layout
 
-## Citation
-
-```bibtex
-@article{morris2025howmuch,
-  title={How much do language models memorize?},
-  author={Morris, John X. and Sitawarin, Chawin and Guo, Chuan and Kokhlikyan, Narine and
-          Suh, G. Edward and Rush, Alexander M. and Chaudhuri, Kamalika and Mahloujifar, Saeed},
-  journal={arXiv preprint arXiv:2505.24832},
-  year={2025}
-}
+```text
+src/memory_capacity/model.py       tiny causal Transformer
+src/memory_capacity/experiment.py  data, training, measurement, and plotting
+tests/                             correctness checks
+results/quickstart/                checked-in example outputs
 ```
 
-## License
+## Citation and license
 
-MIT
+Based on arXiv:2505.24832. Code in this repository is released under the MIT
+License.
